@@ -1,0 +1,70 @@
+name: "Build APK from ZIP (حالت گوشی)"
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+    paths:
+      - '*.zip'
+
+permissions:
+  contents: write
+
+jobs:
+  unpack-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Unzip project
+        run: |
+          unzip -o -q MS7-GURD-Android.zip -d src-tmp
+          PROJ=$(dirname "$(find src-tmp -name settings.gradle.kts | head -1)")
+          echo "PROJ_DIR=$PROJ" >> "$GITHUB_ENV"
+          echo "Project dir: $PROJ"
+
+      - name: Download Xray core (libv2ray.aar)
+        run: |
+          URL=$(curl -s https://api.github.com/repos/2dust/AndroidLibXrayLite/releases/latest | grep -o 'https://[^"]*libv2ray\.aar' | head -1)
+          echo "Downloading: $URL"
+          mkdir -p "$PROJ_DIR/app/libs"
+          curl -sL --retry 3 -o "$PROJ_DIR/app/libs/libv2ray.aar" "$URL"
+          du -h "$PROJ_DIR/app/libs/libv2ray.aar"
+
+      - name: Build signed release APK
+        run: |
+          cd "$PROJ_DIR"
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+          chmod +x gradlew
+          export MS7_STORE_FILE="$PWD/signing/ms7.keystore"
+          export MS7_STORE_PASS=MS7gurd2025
+          export MS7_KEY_ALIAS=ms7
+          export MS7_KEY_PASS=MS7gurd2025
+          ./gradlew assembleRelease --no-daemon --stacktrace
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MS7-GURD-release-apk
+          path: 'src-tmp/**/outputs/apk/release/*.apk'
+          if-no-files-found: error
+
+      - name: Commit source to repo (پشتیبان سورس در گیتهاب)
+        run: |
+          rsync -a --exclude 'build/' --exclude '.gradle/' --exclude 'local.properties' "$PROJ_DIR/" .
+          rm -rf src-tmp
+          git config user.name "ms7-auto"
+          git config user.email "ms7-auto@users.noreply.github.com"
+          git add -A
+          git commit -m "MS7 GURD source (auto-unpacked from ZIP)" || echo "nothing to commit"
+          git push origin HEAD || echo "push skipped"
